@@ -10,7 +10,7 @@ class_name = "UserSyncDO"
 
 [[kv_namespaces]]
 binding = "KV"
-id = "<KV_NAMESPACE_ID_PLACEHOLDER>"
+id = "KV_NAMESPACE_ID_PLACEHOLDER"
 
 [[migrations]]
 tag = "v1"
