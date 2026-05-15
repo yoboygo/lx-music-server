@@ -13,7 +13,7 @@ app.route('/', authRoutes)
 app.route('/', devicesRoutes)
 
 // WebSocket upgrade → UserSyncDO
-app.get('/sync', async(c) => {
+app.get('/socket', async(c) => {
   const upgradeHeader = c.req.header('upgrade')
   if (upgradeHeader?.toLowerCase() !== 'websocket') {
     return c.text('Expected WebSocket', 426)
