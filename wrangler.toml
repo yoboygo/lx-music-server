@@ -8,13 +8,18 @@ name = "USER_SYNC"
 class_name = "UserSyncDO"
 
 [[kv_namespaces]]
-binding = "KV"
-id = "KV_NAMESPACE_ID_PLACEHOLDER"
+binding = "LX_MUSIC"
+id = "f81be36d038e4d438e520a0e4fe86edb"  # ← 填入你的 KV Namespace ID（Cloudflare Dashboard → Workers & Pages → KV → 点击 namespace 查看）
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["UserSyncDO"]
 
 [vars]
-LX_USERS = "LX_USERS_PLACEHOLDER"
 SERVER_NAME = "LX Music Server"
+
+# LX_USERS 已改用 Cloudflare Secret，在 Dashboard 中配置：
+#   Workers & Pages → lx-music-server → Settings → Variables and Secrets
+#   添加 Secret: LX_USERS = [{"name":"admin","password":"your_password"}]
+#   支持简单格式: admin:your_password,alice:her_password
+#   支持 JSON 格式: [{"name":"admin","password":"xxx"},{"name":"alice","password":"yyy","maxSnapshotNum":30}]

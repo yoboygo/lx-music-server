@@ -11,12 +11,12 @@
 - 实时 WebSocket 双向同步歌单与不喜欢规则
 - 快照版本管理，支持多设备增量合并
 - 设备管理 API（查看 / 删除已授权设备）
-- GitHub Actions 一键部署
+- Cloudflare Git 集成自动部署，无需配置 GitHub Secrets
 
 ## 前置要求
 
 - Cloudflare 账号（免费计划即可）
-- GitHub 账号（用于 Fork 仓库和 Actions 自动部署）
+- GitHub 账号（用于 Fork 仓库）
 
 ## 部署方式
 
@@ -28,40 +28,42 @@
 4. 输入名称（如 `lx-music-kv`），点击 **Add**
 5. 创建完成后，点击进入该 Namespace，在详情页可看到 **Namespace ID**，复制备用
 
-### 2. 创建 Cloudflare API Token
+### 2. Fork 并修改 wrangler.toml
+
+1. Fork 本仓库
+2. 编辑 `wrangler.toml`，将 KV Namespace ID 填入：
+
+```toml
+[[kv_namespaces]]
+binding = "KV"
+id = "你的_KV_Namespace_ID"  # ← 替换为第 1 步复制的 ID
+```
+
+3. 提交并推送到你的 Fork
+
+### 3. 连接 Git 仓库自动部署
 
 1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)
-2. 进入 **My Profile → API Tokens**（或直接访问 https://dash.cloudflare.com/profile/api-tokens）
-3. 点击 **Create Token**
-4. 选择 **Edit Cloudflare Workers** 模板，点击 **Use template**
-5. 确认权限包含：
-   - Account / Workers Scripts / Edit
-   - Account / Workers KV Storage / Edit
-   - Account / Durable Objects / Edit
-6. （可选）在 Account Resources 中限制为特定账户
-7. 点击 **Continue to summary** → **Create Token**
-8. 复制生成的 Token（仅显示一次，请妥善保存）
+2. 进入 **Workers & Pages → Create**
+3. 选择 **Connect to Git**
+4. 授权并选择你 Fork 的 `lx-music-server` 仓库
+5. 配置构建：
+   - **Production branch**: `main`
+   - **Build command**: `pnpm deploy`
+   - CF 会自动检测 `packageManager` 字段使用 pnpm
+6. 点击 **Save and Deploy**
 
-### 3. Fork 并配置
-
-Fork 本仓库，在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 中添加以下配置：
-
-**Secrets（敏感信息）：**
-
-| Secret 名称 | 说明 |
-|---|---|
-| `CLOUDFLARE_API_TOKEN` | 上一步创建的 API Token |
-| `LX_USERS` | 用户配置列表（见下方用户配置说明） |
-
-**Variables（非敏感配置）：**
-
-| Variable 名称 | 说明 |
-|---|---|
-| `KV_NAMESPACE_ID` | 第 1 步中创建的 KV Namespace ID |
+之后每次 push 到 `main` 分支，Cloudflare 会自动监听并重新部署，无需任何 GitHub Secrets。
 
 ### 4. 配置用户
 
-在 GitHub Secret `LX_USERS` 中配置所有用户，支持两种格式：
+在 [Cloudflare Dashboard](https://dash.cloudflare.com/) 中配置用户信息：
+
+1. 进入 **Workers & Pages → lx-music-server**
+2. 点击 **Settings → Variables and Secrets**
+3. 点击 **Add**，类型选择 **Secret**，名称填 `LX_USERS`，值填用户配置
+
+**支持两种格式：**
 
 **简单格式**（用户名:密码，逗号分隔）：
 
@@ -84,11 +86,7 @@ admin:your_password,alice:her_password
 | `maxSnapshotNum` | number | 最大快照保留数量，默认 20 |
 | `list.addMusicLocationType` | `"top"` \| `"bottom"` | 歌曲添加位置，默认 `"bottom"` |
 
-> 添加或修改用户只需更新 `LX_USERS` 这一个 Secret，无需修改代码或部署文件。
-
-### 5. 触发部署
-
-在 GitHub 仓库的 **Actions → Deploy to Cloudflare Workers → Run workflow** 手动触发部署（修改 Secret 后需要手动触发部署）。
+> 添加或修改用户只需在 Cloudflare Dashboard 更新 `LX_USERS` Secret，无需修改代码或重新部署。
 
 ## 访问地址
 
@@ -137,6 +135,7 @@ pnpm dev
 如需在本地部署到 Cloudflare Workers：
 
 ```bash
+wrangler login    # 首次需要，浏览器弹窗授权
 pnpm install
 pnpm deploy
 ```

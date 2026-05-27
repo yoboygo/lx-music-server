@@ -11,12 +11,12 @@ A Cloudflare Workers port of [lx-music-sync-server](https://github.com/lyswhut/l
 - Real-time bidirectional WebSocket sync for playlists and dislike rules
 - Snapshot-based version management with multi-device incremental merge
 - Device management API (list / revoke authorized devices)
-- One-click deployment via GitHub Actions
+- Cloudflare Git integration for automatic deployment — no GitHub Secrets needed
 
 ## Prerequisites
 
 - A Cloudflare account (free plan is sufficient)
-- A GitHub account (for forking the repo and Actions-based deployment)
+- A GitHub account (for forking the repo)
 
 ## Deployment
 
@@ -28,45 +28,47 @@ A Cloudflare Workers port of [lx-music-sync-server](https://github.com/lyswhut/l
 4. Enter a name (e.g. `lx-music-kv`) and click **Add**
 5. After creation, click into the namespace — you'll see the **Namespace ID** on the details page. Copy it for later
 
-### 2. Create a Cloudflare API Token
+### 2. Fork and modify wrangler.toml
+
+1. Fork this repository
+2. Edit `wrangler.toml` and fill in your KV Namespace ID:
+
+```toml
+[[kv_namespaces]]
+binding = "KV"
+id = "YOUR_KV_NAMESPACE_ID"  # ← Replace with the ID from step 1
+```
+
+3. Commit and push to your fork
+
+### 3. Connect Git repo for automatic deployment
 
 1. Log in to the [Cloudflare Dashboard](https://dash.cloudflare.com/)
-2. Go to **My Profile → API Tokens** (or visit https://dash.cloudflare.com/profile/api-tokens)
-3. Click **Create Token**
-4. Select the **Edit Cloudflare Workers** template and click **Use template**
-5. Confirm the permissions include:
-   - Account / Workers Scripts / Edit
-   - Account / Workers KV Storage / Edit
-   - Account / Durable Objects / Edit
-6. (Optional) Restrict Account Resources to a specific account
-7. Click **Continue to summary** → **Create Token**
-8. Copy the generated token (it is shown only once — save it securely)
+2. Go to **Workers & Pages → Create**
+3. Select **Connect to Git**
+4. Authorize and select your forked `lx-music-server` repository
+5. Configure the build:
+   - **Production branch**: `main`
+   - **Build command**: `pnpm deploy`
+   - Cloudflare will auto-detect the `packageManager` field and use pnpm
+6. Click **Save and Deploy**
 
-### 3. Fork and configure
-
-Fork this repository, then go to **Settings → Secrets and variables → Actions** in your GitHub repository and add the following:
-
-**Secrets (sensitive data):**
-
-| Secret | Description |
-|---|---|
-| `CLOUDFLARE_API_TOKEN` | The API Token created in step 2 |
-| `LX_USERS` | User configuration list (see user configuration below) |
-
-**Variables (non-sensitive config):**
-
-| Variable | Description |
-|---|---|
-| `KV_NAMESPACE_ID` | The KV Namespace ID from step 1 |
+From now on, every push to the `main` branch will trigger an automatic redeployment on Cloudflare — no GitHub Secrets required.
 
 ### 4. Configure users
 
-Configure all users in the GitHub Secret `LX_USERS`. Two formats are supported:
+Configure user information in the [Cloudflare Dashboard](https://dash.cloudflare.com/):
+
+1. Go to **Workers & Pages → lx-music-server**
+2. Click **Settings → Variables and Secrets**
+3. Click **Add**, select type **Secret**, enter the name `LX_USERS`, and enter your user configuration as the value
+
+**Two formats are supported:**
 
 **Simple format** (username:password, comma-separated):
 
 ```
-admin:<USER_NAME>,alice:her_password
+admin:your_password,alice:her_password
 ```
 
 **JSON format** (supports additional options):
@@ -84,11 +86,7 @@ admin:<USER_NAME>,alice:her_password
 | `maxSnapshotNum` | number | Maximum number of snapshots to retain, default 20 |
 | `list.addMusicLocationType` | `"top"` \| `"bottom"` | Where new songs are added, default `"bottom"` |
 
-> To add or modify users, simply update the `LX_USERS` Secret — no code or deployment file changes needed.
-
-### 5. Trigger deployment
-
-Manually trigger a deployment from **Actions → Deploy to Cloudflare Workers → Run workflow** in your GitHub repository (after modifying Secrets, you need to manually trigger a deployment).
+> To add or modify users, simply update the `LX_USERS` Secret in Cloudflare Dashboard — no code changes or redeployment needed.
 
 ## Access URL
 
@@ -137,6 +135,7 @@ pnpm dev
 To deploy to Cloudflare Workers from your local machine:
 
 ```bash
+wrangler login    # Required on first run; opens browser for authorization
 pnpm install
 pnpm deploy
 ```
