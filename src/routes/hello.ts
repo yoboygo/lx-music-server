@@ -4,7 +4,7 @@ import { SYNC_CODE } from '@/constants'
 const app = new Hono<{ Bindings: LX.Env }>()
 
 app.get('/', (c) => {
-  return c.text(c.env.SERVER_NAME || 'LX Music Server')
+  return c.redirect('/admin')
 })
 
 app.get('/hello', (c) => {
