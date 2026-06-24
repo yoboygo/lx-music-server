@@ -11,8 +11,8 @@ class_name = "UserSyncDO"
 
 [[kv_namespaces]]
 binding = "KV"
-id = "f81be36d038e4d438e520a0e4fe86edb"  # ← 填入你的 KV Namespace ID（Cloudflare Dashboard → Workers & Pages → KV → 点击 namespace 查看）
-#id = "b9fa9e1a082c40aaa40cf82c567ae165"
+#id = "f81be36d038e4d438e520a0e4fe86edb"  # ← 填入你的 KV Namespace ID（Cloudflare Dashboard → Workers & Pages → KV → 点击 namespace 查看）
+id = "b9fa9e1a082c40aaa40cf82c567ae165"
 
 [[migrations]]
 tag = "v1"
@@ -22,11 +22,11 @@ new_sqlite_classes = ["UserSyncDO"]
 SERVER_NAME = "LX Music Server"
 
 [[routes]]
-pattern = "lx.supx.tech"
-zone_name = "supx.tech"
+#pattern = "lx.supx.tech"
+#zone_name = "supx.tech"
 
-#pattern = "lx.qianbaidu.top"
-#zone_name = "qianbaidu.top"
+pattern = "lx.qianbaidu.top"
+zone_name = "qianbaidu.top"
 
 custom_domain = true
 enabled = true
