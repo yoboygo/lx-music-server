@@ -6,21 +6,20 @@ const basicAuth = (c: { req: { raw: Request }; env: LX.Env }): string | null => 
   const authHeader = c.req.raw.headers.get('authorization')
   if (!authHeader?.startsWith('Basic ')) return null
 
-  let decoded: string
   try {
-    decoded = atob(authHeader.slice(6))
+    const raw = atob(authHeader.slice(6))
+    const decoded = decodeURIComponent(escape(raw))
+    const sep = decoded.indexOf(':')
+    if (sep === -1) return null
+    const username = decoded.slice(0, sep)
+    const password = decoded.slice(sep + 1)
+
+    const users: LX.User[] = JSON.parse(c.env.LX_USERS || '[]')
+    const user = users.find(u => u.name === username && u.password === password)
+    return user ? user.name : null
   } catch {
     return null
   }
-
-  const sep = decoded.indexOf(':')
-  if (sep === -1) return null
-  const username = decoded.slice(0, sep)
-  const password = decoded.slice(sep + 1)
-
-  const users: LX.User[] = JSON.parse(c.env.LX_USERS || '[]')
-  const user = users.find(u => u.name === username && u.password === password)
-  return user ? user.name : null
 }
 
 app.get('/devices', async(c) => {

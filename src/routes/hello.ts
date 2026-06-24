@@ -3,6 +3,10 @@ import { SYNC_CODE } from '@/constants'
 
 const app = new Hono<{ Bindings: LX.Env }>()
 
+app.get('/', (c) => {
+  return c.text(c.env.SERVER_NAME || 'LX Music Server')
+})
+
 app.get('/hello', (c) => {
   return c.text(SYNC_CODE.helloMsg)
 })

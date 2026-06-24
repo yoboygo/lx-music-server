@@ -10,6 +10,7 @@ A Cloudflare Workers port of [lx-music-sync-server](https://github.com/lyswhut/l
 - Multi-user isolation: each user gets a dedicated DO instance and storage
 - Real-time bidirectional WebSocket sync for playlists and dislike rules
 - Snapshot-based version management with multi-device incremental merge
+- Admin panel (`/admin`): web UI for managing devices and playlist data
 - Device management API (list / revoke authorized devices)
 - Cloudflare Git integration for automatic deployment — no GitHub Secrets needed
 
@@ -61,17 +62,7 @@ Configure user information in the [Cloudflare Dashboard](https://dash.cloudflare
 
 1. Go to **Workers & Pages → lx-music-server**
 2. Click **Settings → Variables and Secrets**
-3. Click **Add**, select type **Secret**, enter the name `LX_USERS`, and enter your user configuration as the value
-
-**Two formats are supported:**
-
-**Simple format** (username:password, comma-separated):
-
-```
-admin:your_password,alice:her_password
-```
-
-**JSON format** (supports additional options):
+3. Click **Add**, select type **Secret**, enter the name `LX_USERS`, and enter your user configuration as the value (JSON format)
 
 ```json
 [{"name":"admin","password":"your_password"},{"name":"alice","password":"her_password","maxSnapshotNum":30}]
@@ -119,7 +110,101 @@ Once configured, you can access the service at `https://sync.example.com`.
 In LX Music's sync settings:
 
 - **Server URL**: `https://<your-worker-name>.<your-subdomain>.workers.dev` (or your custom domain)
-- **Password**: the corresponding password
+- **Password**: the password configured in `LX_USERS` (no username needed — the server auto-matches)
+
+> The password is all you need. The server iterates through all users in `LX_USERS`, attempting to decrypt with each password. A successful decrypt completes authentication.
+
+## Device ID Mechanism
+
+### Authentication Flow
+
+1. **First authentication**: The client sends an encrypted message. The server iterates through `LX_USERS` trying to decrypt. On match, the server generates a random `clientId` (16-byte base64) and `key` (16-byte base64), encrypts them with RSA, and returns to the client. The client saves `clientId` and `key` for future connections.
+
+2. **Re-authentication**: The client sends its saved `clientId`. The server looks up the corresponding username via KV, then retrieves the `key` from DO storage to decrypt and verify.
+
+3. **Same device reuse**: If the device name and type (mobile/desktop) match an existing device, the server reuses the existing `clientId` and `key` to avoid duplicate entries.
+
+### Device Deletion
+
+When a device is deleted via the admin panel or API, the server:
+- Removes the `clientId → userName` mapping from KV
+- Removes the device info from DO storage
+- Disconnects the device's WebSocket connection
+- Clears the device's snapshot tracking information
+
+After deletion, the device must re-authenticate to connect.
+
+### Limits
+
+- Maximum 101 devices per user
+- If a device is reinstalled or data is cleared, a new `clientId` is generated; old entries are not automatically cleaned up
+
+## Admin Panel
+
+Visit `https://<your-worker-url>/admin` to access the admin panel. Log in with the username and password configured in `LX_USERS`.
+
+### Features
+
+**Device Management**
+- View all authorized devices (name, type, last connection time)
+- Delete individual devices — re-authentication required after deletion
+
+**Playlist Data**
+- Sidebar showing all playlists with song counts (Favorites, Default, custom lists)
+- Paginated song table (song name, artist, source, duration)
+- Batch select and delete songs
+- Dislike rules management: view, delete individually, or batch delete
+
+**Data Backup**
+- Export: export all playlists and dislike rules as a JSON file (click "Export Data" in the header)
+- Import: restore data from a JSON file with confirmation dialog (click "Import Data" in the header)
+
+### Export File Format
+
+```json
+{
+  "listData": {
+    "defaultList": [{ "id": "...", "name": "...", "singer": "...", "source": "kw", "interval": "04:32", "meta": "{}" }],
+    "loveList": [...],
+    "userList": [{ "id": "list_xxx", "name": "My Playlist", "list": [...] }]
+  },
+  "dislikeRules": "songname@singer\nanothersong@anothersinger"
+}
+```
+
+> The exported JSON file serves as a complete backup. Importing overwrites all playlist and dislike rule data for the current user.
+
+### Admin Panel API
+
+All endpoints use HTTP Basic Auth with the same credentials as the sync account.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/admin/login` | Verify login credentials |
+| GET | `/api/admin/devices` | List authorized devices |
+| DELETE | `/api/admin/devices/:clientId` | Revoke a device |
+| GET | `/api/admin/list-data` | Get playlist data |
+| GET | `/api/admin/dislike-data` | Get dislike rules |
+| POST | `/api/admin/list-music/delete` | Batch delete songs `{listId, musicIds}` |
+| POST | `/api/admin/dislike-music/delete` | Overwrite dislike rules `{rules}` |
+| GET | `/api/admin/export` | Export all data (playlists + dislike rules) |
+| POST | `/api/admin/import` | Import data `{listData, dislikeRules}` |
+
+## Device Management API
+
+All endpoints use HTTP Basic Auth with the same credentials as the sync account.
+
+**List authorized devices:**
+
+```bash
+curl -u <username>:<password> https://<worker-url>/devices
+```
+
+**Revoke a device:**
+
+```bash
+curl -u <username>:<password> -X DELETE https://<worker-url>/devices/<clientId>
+```
 
 ## Local Development
 
@@ -140,39 +225,31 @@ pnpm install
 pnpm deploy
 ```
 
-## Device Management API
-
-All endpoints use HTTP Basic Auth with the same credentials as the sync account.
-
-**List authorized devices:**
-
-```bash
-curl -u <username>:<password> https://<worker-url>/devices
-```
-
-**Revoke a device:**
-
-```bash
-curl -u <username>:<password> -X DELETE https://<worker-url>/devices/<clientId>
-```
-
 ## Architecture
 
 ```
 Client
   │
   ├─ GET  /ah              Authentication (new device / re-auth)
+  │     ├─ New device: generate clientId + key, return RSA-encrypted
+  │     └─ Known device: lookup key via clientId, decrypt & verify
   ├─ GET  /socket          WebSocket upgrade → UserSyncDO
+  │     └─ KV lookup clientId → userName, route to matching DO
   ├─ GET  /devices         List devices (Basic Auth)
   ├─ DELETE /devices/:id   Revoke device (Basic Auth)
+  ├─ GET  /admin           Admin panel (Web UI)
+  ├─ /api/admin/*          Admin panel API (Basic Auth)
   ├─ GET  /hello           Connectivity check
   └─ GET  /id              Server unique ID
 
 Cloudflare Workers (stateless routing layer)
-  │  KV stores clientId → userName mapping
+  │  KV: clientId → userName mapping (for WebSocket routing)
   │
   └─ UserSyncDO (one instance per user)
-       ├─ DO Storage: device info, playlist snapshots, dislike rule snapshots
+       ├─ DO Storage
+       │    ├─ devicesInfo: device info (clientId, key, deviceName, isMobile)
+       │    ├─ Playlist snapshots (MD5 versioned, multi-device incremental merge)
+       │    └─ Dislike rule snapshots
        └─ WebSocket: real-time multi-device sync
 ```
 

@@ -3,6 +3,7 @@ import { SYNC_CODE } from '@/constants'
 import helloRoutes from '@/routes/hello'
 import authRoutes from '@/routes/auth'
 import devicesRoutes from '@/routes/devices'
+import adminRoutes from '@/routes/admin'
 
 export { UserSyncDO } from '@/durable/UserSyncDO'
 
@@ -11,6 +12,7 @@ const app = new Hono<{ Bindings: LX.Env }>()
 app.route('/', helloRoutes)
 app.route('/', authRoutes)
 app.route('/', devicesRoutes)
+app.route('/', adminRoutes)
 
 // WebSocket upgrade → UserSyncDO
 app.get('/socket', async(c) => {

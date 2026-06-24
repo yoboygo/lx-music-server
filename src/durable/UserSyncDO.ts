@@ -94,9 +94,15 @@ export class UserSyncDO implements DurableObject {
     if (url.pathname === '/ws') return this.handleWebSocketUpgrade(request)
     if (url.pathname === '/devices' && request.method === 'GET') return this.handleGetDevices()
     if (url.pathname.startsWith('/devices/') && request.method === 'DELETE') {
-      const clientId = url.pathname.slice('/devices/'.length)
+      const clientId = decodeURIComponent(url.pathname.slice('/devices/'.length))
       return this.handleRemoveDevice(clientId)
     }
+    if (url.pathname === '/list-data' && request.method === 'GET') return this.handleGetListData()
+    if (url.pathname === '/dislike-data' && request.method === 'GET') return this.handleGetDislikeData()
+    if (url.pathname === '/list-music/delete' && request.method === 'POST') return this.handleDeleteListMusic(request)
+    if (url.pathname === '/dislike-music/delete' && request.method === 'POST') return this.handleDeleteDislikeMusic(request)
+    if (url.pathname === '/export-data' && request.method === 'GET') return this.handleExportData()
+    if (url.pathname === '/import-data' && request.method === 'POST') return this.handleImportData(request)
 
     return new Response('Not Found', { status: 404 })
   }
@@ -132,6 +138,57 @@ export class UserSyncDO implements DurableObject {
     return new Response(null, { status: 204 })
   }
 
+  private async handleGetListData(): Promise<Response> {
+    if (!this.userSpace) return new Response('{"defaultList":[],"loveList":[],"userList":[]}', { headers: { 'content-type': 'application/json' } })
+    const listData = await this.userSpace.listManage.getListData()
+    return new Response(JSON.stringify(listData), { headers: { 'content-type': 'application/json' } })
+  }
+
+  private async handleGetDislikeData(): Promise<Response> {
+    if (!this.userSpace) return new Response('""', { headers: { 'content-type': 'application/json' } })
+    const rules = await this.userSpace.dislikeManage.getDislikeRules()
+    return new Response(JSON.stringify(rules), { headers: { 'content-type': 'application/json' } })
+  }
+
+  private async handleDeleteListMusic(request: Request): Promise<Response> {
+    if (!this.userSpace) return new Response(null, { status: 404 })
+    const body = await request.json<{ listId: string; musicIds: string[] }>()
+    const { listId, musicIds } = body
+    if (!listId || !musicIds?.length) return new Response(null, { status: 400 })
+    await this.userSpace.listManage.listDataManage.listMusicRemove(listId, musicIds)
+    void this.userSpace.listManage.createSnapshot()
+    return new Response(null, { status: 204 })
+  }
+
+  private async handleDeleteDislikeMusic(request: Request): Promise<Response> {
+    if (!this.userSpace) return new Response(null, { status: 404 })
+    const body = await request.json<{ rules: string }>()
+    await this.userSpace.dislikeManage.dislikeDataManage.overwriteDislikeInfo(body.rules ?? '')
+    void this.userSpace.dislikeManage.createSnapshot()
+    return new Response(null, { status: 204 })
+  }
+
+  private async handleExportData(): Promise<Response> {
+    if (!this.userSpace) return new Response('{"listData":{"defaultList":[],"loveList":[],"userList":[]},"dislikeRules":""}', { headers: { 'content-type': 'application/json' } })
+    const listData = await this.userSpace.listManage.getListData()
+    const dislikeRules = await this.userSpace.dislikeManage.getDislikeRules()
+    return new Response(JSON.stringify({ listData, dislikeRules }), { headers: { 'content-type': 'application/json' } })
+  }
+
+  private async handleImportData(request: Request): Promise<Response> {
+    if (!this.userSpace) return new Response(null, { status: 404 })
+    const body = await request.json<{ listData?: LX.Sync.List.ListData; dislikeRules?: string }>()
+    if (body.listData) {
+      await this.userSpace.listManage.listDataManage.listDataOverwrite(body.listData)
+      void this.userSpace.listManage.createSnapshot()
+    }
+    if (body.dislikeRules !== undefined) {
+      await this.userSpace.dislikeManage.dislikeDataManage.overwriteDislikeInfo(body.dislikeRules)
+      void this.userSpace.dislikeManage.createSnapshot()
+    }
+    return new Response(null, { status: 204 })
+  }
+
   private async handleAuth(request: Request): Promise<Response> {
     const body = await request.json<{ encryptedMsg: string; clientId?: string; serverName: string }>()
     const { encryptedMsg, clientId, serverName } = body
@@ -164,7 +221,6 @@ export class UserSyncDO implements DurableObject {
       const publicKey = `-----BEGIN PUBLIC KEY-----\n${data[1]}\n-----END PUBLIC KEY-----`
       const deviceName = data[2] || 'Unknown'
       const isMobile = data[3] === 'lx_music_mobile'
-      const keyInfo = createClientKeyInfo(deviceName, isMobile)
 
       // 首次认证时建立 userName（先设置再 await，防止并发双重初始化）
       if (!this.userName) {
@@ -173,8 +229,16 @@ export class UserSyncDO implements DurableObject {
         await this.loadAndInit(name)
       }
 
-      this.userSpace!.dataManage.devicesInfo.userName = userInfo.name
-      await this.userSpace!.dataManage.saveClientKeyInfo(keyInfo)
+      // 同名设备复用已有 clientId/key，避免重复记录
+      let keyInfo: LX.Sync.KeyInfo
+      const existing = this.userSpace!.dataManage.getAllClientKeyInfo().find(d => d.deviceName === deviceName && d.isMobile === isMobile)
+      if (existing) {
+        keyInfo = existing
+      } else {
+        keyInfo = createClientKeyInfo(deviceName, isMobile)
+        this.userSpace!.dataManage.devicesInfo.userName = userInfo.name
+        await this.userSpace!.dataManage.saveClientKeyInfo(keyInfo)
+      }
 
       const encrypted = await rsaEncrypt(
         JSON.stringify({ clientId: keyInfo.clientId, key: keyInfo.key, serverName }),
