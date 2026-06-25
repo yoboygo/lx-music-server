@@ -10,19 +10,9 @@ export class DislikeDataManage {
   snapshotDataManage: SnapshotDataManage
   dislikeRules = ''
 
-  constructor(snapshotDataManage: SnapshotDataManage, preloadedDislikeRules?: LX.Dislike.DislikeRules) {
+  constructor(snapshotDataManage: SnapshotDataManage, preloadedDislikeRules: LX.Dislike.DislikeRules) {
     this.snapshotDataManage = snapshotDataManage
-
-    if (preloadedDislikeRules !== undefined) {
-      this.dislikeRules = preloadedDislikeRules
-    } else {
-      let dislikeRules: LX.Dislike.DislikeRules | null
-      void this.snapshotDataManage.getSnapshotInfo().then(async(snapshotInfo) => {
-        if (snapshotInfo.latest) dislikeRules = await this.snapshotDataManage.getSnapshot(snapshotInfo.latest)
-        if (!dislikeRules) dislikeRules = ''
-        this.dislikeRules = dislikeRules
-      })
-    }
+    this.dislikeRules = preloadedDislikeRules
   }
 
   getDislikeRules = async(): Promise<LX.Dislike.DislikeRules> => {

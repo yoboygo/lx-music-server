@@ -2,14 +2,24 @@ import { Hono } from 'hono'
 
 const app = new Hono<{ Bindings: LX.Env }>()
 
-const HTML = `<!DOCTYPE html>
+// 生成 CSP nonce（base64url，无填充）
+const generateNonce = (): string => {
+  const bytes = crypto.getRandomValues(new Uint8Array(18))
+  let binary = ''
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+  return btoa(binary).replace(/=+$/, '')
+}
+
+const HTML_TEMPLATE = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
 <title>LX Music Server</title>
-<style>
+<style nonce="__CSP_NONCE__">
 *{margin:0;padding:0;box-sizing:border-box}
+.hidden{display:none!important}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f0f2f5;color:#333;min-height:100vh}
 .header{background:linear-gradient(135deg,#1a1a2e,#16213e);color:#fff;padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between}
 .header h1{font-size:17px;font-weight:600}
@@ -102,7 +112,7 @@ tr:last-child td{border-bottom:none}
 <body>
 <div class="header">
   <h1>LX Music Server</h1>
-  <div class="right" id="headerRight" style="display:none">
+  <div class="right hidden" id="headerRight">
     <span class="user-badge" id="userBadge"></span>
     <button class="btn-logout" id="exportBtn">导出数据</button>
     <button class="btn-logout" id="importBtn">导入数据</button>
@@ -125,7 +135,7 @@ tr:last-child td{border-bottom:none}
     <button class="login-btn" id="loginBtn">登录</button>
   </div>
 </div>
-<div id="mainView" class="container" style="display:none">
+<div id="mainView" class="container hidden">
   <div class="tabs" id="tabsBar">
     <button class="tab active" data-tab="devices">设备管理</button>
     <button class="tab" data-tab="playlists">歌单数据</button>
@@ -144,7 +154,7 @@ tr:last-child td{border-bottom:none}
     </div>
   </div>
 </div>
-<script>
+<script nonce="__CSP_NONCE__">
 var AUTH='';
 var plData={lists:[],dislikeRules:'',activeList:'love',page:1,pageSize:50,selected:{}};
 
@@ -174,7 +184,7 @@ function doLogin(){
 
 function logout(){
   AUTH='';sessionStorage.removeItem('lx_auth');sessionStorage.removeItem('lx_user');
-  $('loginView').style.display='';$('mainView').style.display='none';$('headerRight').style.display='none';
+  $('loginView').classList.remove('hidden');$('mainView').classList.add('hidden');$('headerRight').classList.add('hidden');
   $('pwInput').value='';$('userInput').value='';$('loginErr').textContent='';
 }
 
@@ -214,7 +224,7 @@ function importData(){
 }
 
 function showMain(){
-  $('loginView').style.display='none';$('mainView').style.display='';$('headerRight').style.display='';
+  $('loginView').classList.add('hidden');$('mainView').classList.remove('hidden');$('headerRight').classList.remove('hidden');
   $('userBadge').textContent=sessionStorage.getItem('lx_user')||'';loadDevices();
 }
 
@@ -280,7 +290,7 @@ function renderPlaylists(){
     h+='<div class="pl-toolbar">';
     h+='<input type="checkbox" class="chk" id="checkAllDislike"'+(rules.length>0&&rules.every(function(_,i){return drSel.indexOf(String(i))>=0})?' checked':'')+'>';
     h+='<span class="info">共 '+rules.length+' 条规则</span>';
-    h+='<button class="btn btn-danger" id="delSelDislike" style="display:'+(drSel.length?'':'none')+'">删除选中 ('+drSel.length+')</button>';
+    h+='<button class="btn btn-danger'+(drSel.length?'':' hidden')+'" id="delSelDislike">删除选中 ('+drSel.length+')</button>';
     h+='</div>';
     h+='<div class="dislike-list">';
     rules.forEach(function(r,i){
@@ -292,7 +302,7 @@ function renderPlaylists(){
     h+='<div class="pl-toolbar">';
     h+='<input type="checkbox" class="chk" id="checkAll"'+(allChecked?' checked':'')+'>';
     h+='<span class="info">共 '+total+' 首，第 '+pg+'/'+pages+' 页</span>';
-    h+='<button class="btn btn-danger" id="delSelBtn" style="display:'+(sel.length?'':'none')+'">删除选中 ('+sel.length+')</button>';
+    h+='<button class="btn btn-danger'+(sel.length?'':' hidden')+'" id="delSelBtn">删除选中 ('+sel.length+')</button>';
     h+='</div>';
     if(!total)h+='<div class="empty">空列表</div>';
     else{
@@ -387,7 +397,7 @@ document.addEventListener('change',function(e){
     if(t.checked&&idx<0)sel.push(t.dataset.dr);
     if(!t.checked&&idx>=0)sel.splice(idx,1);
     var delBtn=document.getElementById('delSelDislike');
-    if(delBtn)delBtn.style.display=sel.length?'':'none';
+    if(delBtn)delBtn.classList.toggle('hidden',!sel.length);
     return;
   }
 });
@@ -455,20 +465,76 @@ $('modalMask').addEventListener('click',function(e){if(e.target===e.currentTarge
 </html>`;
 
 app.get('/admin', async(c) => {
-  return new Response(HTML, { headers: { 'content-type': 'text/html; charset=utf-8' } })
+  const nonce = generateNonce()
+  const html = HTML_TEMPLATE.replaceAll('__CSP_NONCE__', nonce)
+  const csp = [
+    "default-src 'self'",
+    `script-src 'nonce-${nonce}'`,
+    `style-src 'nonce-${nonce}'`,
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "font-src 'self'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join('; ')
+  return new Response(html, {
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'content-security-policy': csp,
+      'x-content-type-options': 'nosniff',
+      'x-frame-options': 'DENY',
+      'referrer-policy': 'no-referrer',
+    },
+  })
 })
 
 app.get('/api/admin/login', async(c) => {
+  const ip = c.req.raw.headers.get('cf-connecting-ip') ?? 'unknown'
+  if (checkAdminRateLimit(ip)) return c.text('Too Many Requests', 429)
   const authHeader = c.req.raw.headers.get('authorization')
-  if (!authHeader?.startsWith('Basic ')) return c.text('Unauthorized', 401)
+  if (!authHeader?.startsWith('Basic ')) { recordAdminFailure(ip); return c.text('Unauthorized', 401) }
   const creds = decodeBasicAuth(authHeader.slice(6))
-  if (!creds) return c.text('Unauthorized', 401)
+  if (!creds) { recordAdminFailure(ip); return c.text('Unauthorized', 401) }
   const [username, password] = creds
   const users: LX.User[] = JSON.parse(c.env.LX_USERS || '[]')
   const user = users.find(u => u.name === username && u.password === password)
-  if (!user) return c.text('Unauthorized', 401)
+  if (!user) { recordAdminFailure(ip); return c.text('Unauthorized', 401) }
+  clearAdminFailures(ip)
   return c.json({ user: user.name })
 })
+
+// In-memory rate limiting for admin login (brute-force defense)
+const adminIpFailures = new Map<string, { count: number; resetAt: number }>()
+const ADMIN_RATE_LIMIT = 10
+const ADMIN_RATE_WINDOW_MS = 60 * 1000
+const ADMIN_SWEEP_THRESHOLD = 1024
+
+const sweepAdminExpired = (now: number) => {
+  if (adminIpFailures.size < ADMIN_SWEEP_THRESHOLD) return
+  for (const [k, v] of adminIpFailures) if (v.resetAt < now) adminIpFailures.delete(k)
+}
+
+const checkAdminRateLimit = (ip: string): boolean => {
+  const now = Date.now()
+  sweepAdminExpired(now)
+  const entry = adminIpFailures.get(ip)
+  if (!entry || entry.resetAt < now) return false
+  return entry.count >= ADMIN_RATE_LIMIT
+}
+
+const recordAdminFailure = (ip: string) => {
+  const now = Date.now()
+  const entry = adminIpFailures.get(ip)
+  if (!entry || entry.resetAt < now) {
+    adminIpFailures.set(ip, { count: 1, resetAt: now + ADMIN_RATE_WINDOW_MS })
+  } else {
+    entry.count++
+  }
+}
+
+const clearAdminFailures = (ip: string) => { adminIpFailures.delete(ip) }
 
 function decodeBasicAuth(b64: string): [string, string] | null {
   try {

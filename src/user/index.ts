@@ -12,14 +12,25 @@ export interface UserSpace {
 }
 
 // 模块级别单例，由 UserSyncDO 在 blockConcurrencyWhile 中初始化
+// 注意：同一 isolate 中的多个 DO 实例可能共享此变量，DO fetch 串行化保证大多数情况下正确，
+// 但 await 期间可能被其他 DO 覆盖。getUserSpace 会校验 userName 防止静默数据损坏。
 let _userSpace: UserSpace | null = null
+let _currentUserName = ''
 
 export const setUserSpace = (userSpace: UserSpace) => {
   _userSpace = userSpace
 }
 
-export const getUserSpace = (_name?: string): UserSpace => {
+export const setCurrentUserName = (name: string) => {
+  _currentUserName = name
+}
+
+export const getUserSpace = (name?: string): UserSpace => {
   if (!_userSpace) throw new Error('UserSpace not initialized')
+  // 校验：若请求的 userName 与当前单例的 userName 不一致，说明 DO 上下文已切换
+  if (name && _currentUserName && name !== _currentUserName) {
+    throw new Error(`UserSpace context mismatch: requested ${name}, current ${_currentUserName}`)
+  }
   return _userSpace
 }
 

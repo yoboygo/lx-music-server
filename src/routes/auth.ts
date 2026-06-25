@@ -5,18 +5,24 @@ import { toMD5, aesDecrypt } from '@/utils/crypto'
 const app = new Hono<{ Bindings: LX.Env }>()
 
 const getIP = (c: { req: { raw: Request } }) => {
-  return c.req.raw.headers.get('cf-connecting-ip')
-    ?? c.req.raw.headers.get('x-forwarded-for')
-    ?? 'unknown'
+  // Cloudflare 唯一可信的客户端 IP 来源；x-forwarded-for 可被客户端伪造
+  return c.req.raw.headers.get('cf-connecting-ip') ?? 'unknown'
 }
 
 // In-memory rate limiting per IP (resets on Worker restart, sufficient as first-pass guard)
 const ipFailures = new Map<string, { count: number; resetAt: number }>()
 const RATE_LIMIT = 10
 const RATE_WINDOW_MS = 60 * 1000
+const SWEEP_THRESHOLD = 1024
+
+const sweepExpired = (now: number) => {
+  if (ipFailures.size < SWEEP_THRESHOLD) return
+  for (const [k, v] of ipFailures) if (v.resetAt < now) ipFailures.delete(k)
+}
 
 const checkRateLimit = (ip: string): boolean => {
   const now = Date.now()
+  sweepExpired(now)
   const entry = ipFailures.get(ip)
   if (!entry || entry.resetAt < now) return false
   return entry.count >= RATE_LIMIT
@@ -75,17 +81,14 @@ app.get('/ah', async(c) => {
   }
 
   // 新设备首次认证
-  console.log('[auth] new device, users:', users.length, 'encryptedMsg len:', encryptedMsg.length)
+  console.log('[auth] new device, users:', users.length)
   for (const userInfo of users) {
     const keyHex = toMD5(userInfo.password).substring(0, 16)
     const key = btoa(keyHex)
-    console.log('[auth] trying user:', userInfo.name, 'keyHex:', keyHex)
     let text: string
     try {
       text = aesDecrypt(encryptedMsg, key)
-      console.log('[auth] decrypt ok, starts with authMsg:', text.startsWith(SYNC_CODE.authMsg))
     } catch (e: any) {
-      console.log('[auth] decrypt failed:', e?.message)
       continue
     }
     if (!text.startsWith(SYNC_CODE.authMsg)) continue

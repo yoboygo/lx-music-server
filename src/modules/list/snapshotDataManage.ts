@@ -22,16 +22,25 @@ export class SnapshotDataManage {
 
   clearOldSnapshot = async() => {
     if (!this.snapshotInfo) return
-    const snapshotList = this.snapshotInfo.list.filter(key => !this.isIncludesDevice(key))
-    let requiredSave = snapshotList.length > this.maxSnapshotNum
-    while (snapshotList.length > this.maxSnapshotNum) {
-      const name = snapshotList.pop()
-      if (name) {
-        await this.removeSnapshot(name)
-        this.snapshotInfo.list.splice(this.snapshotInfo.list.indexOf(name), 1)
-      } else break
+    // 直接在原数组上操作：保留被设备引用的快照，删除多余的旧快照
+    const referenced = this.clientSnapshotKeys
+    const toRemove: string[] = []
+    // 从最新（数组头部）向尾部遍历，优先保留较新的快照
+    for (const key of this.snapshotInfo.list) {
+      if (referenced.has(key)) continue
+      toRemove.push(key)
     }
-    if (requiredSave) this.saveSnapshotInfo(this.snapshotInfo)
+    // 保留 maxSnapshotNum 个未引用快照（按 list 顺序，越靠前越新）
+    const surplus = toRemove.length > this.maxSnapshotNum
+      ? toRemove.slice(this.maxSnapshotNum)
+      : []
+    if (surplus.length === 0) return
+    for (const name of surplus) {
+      await this.removeSnapshot(name)
+      const idx = this.snapshotInfo.list.indexOf(name)
+      if (idx >= 0) this.snapshotInfo.list.splice(idx, 1)
+    }
+    if (surplus.length) this.saveSnapshotInfo(this.snapshotInfo)
   }
 
   updateDeviceSnapshotKey = async(clientId: string, key: string) => {

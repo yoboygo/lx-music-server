@@ -5,13 +5,14 @@ import { decryptMsg, encryptMsg } from '@/utils/compress'
 import { callObj, sync } from '@/sync'
 import { ListEvent } from '@/modules/list/event'
 import { DislikeEvent } from '@/modules/dislike/event'
-import { setUserSpace, createUserSpace, type UserSpace } from '@/user'
+import { setUserSpace, setCurrentUserName, createUserSpace, type UserSpace } from '@/user'
 import { setUsersContext, getUserConfig, createClientKeyInfo } from '@/user/data'
 
 const DEFAULT_SNAPSHOT_INFO = { latest: null as string | null, time: 0, list: [] as string[], clients: {} as Record<string, any> }
 
 const IP_FAILURE_TTL_MS = 60 * 1000
 const IP_FAILURE_LIMIT = 10
+const IP_FAILURE_SWEEP_THRESHOLD = 1024
 const PING_INTERVAL_MS = 30 * 1000
 
 export class UserSyncDO implements DurableObject {
@@ -24,10 +25,16 @@ export class UserSyncDO implements DurableObject {
   private userSpace: UserSpace | null = null
   private readonly listSyncRef: { current: string | null } = { current: null }
   private readonly dislikeSyncRef: { current: string | null } = { current: null }
+  // 首次认证时的初始化 Promise，防止并发双重初始化
+  private initPromise: Promise<void> | null = null
+  private listEvent: ListEvent
+  private dislikeEvent: DislikeEvent
 
   constructor(state: DurableObjectState, env: LX.Env) {
     this.state = state
     this.env = env
+    this.listEvent = new ListEvent()
+    this.dislikeEvent = new DislikeEvent()
 
     this.state.blockConcurrencyWhile(async() => {
       await this.initialize()
@@ -75,9 +82,11 @@ export class UserSyncDO implements DurableObject {
     )
     this.userSpace = userSpace
     setUserSpace(userSpace)
+    setCurrentUserName(userName)
 
-    if (!global.event_list) global.event_list = new ListEvent() as any
-    if (!global.event_dislike) global.event_dislike = new DislikeEvent() as any
+    // 用 DO 实例字段替换全局单例，避免跨用户 DO 实例共享
+    global.event_list = this.listEvent as any
+    global.event_dislike = this.dislikeEvent as any
   }
 
   private async initialize() {
@@ -134,7 +143,7 @@ export class UserSyncDO implements DurableObject {
       }
     }
     await this.userSpace.removeDevice(clientId)
-    void this.userSpace.flush()
+    await this.userSpace.flush()
     return new Response(null, { status: 204 })
   }
 
@@ -152,19 +161,37 @@ export class UserSyncDO implements DurableObject {
 
   private async handleDeleteListMusic(request: Request): Promise<Response> {
     if (!this.userSpace) return new Response(null, { status: 404 })
-    const body = await request.json<{ listId: string; musicIds: string[] }>()
+    let body: { listId: string; musicIds: string[] }
+    try {
+      body = await request.json<{ listId: string; musicIds: string[] }>()
+    } catch {
+      return new Response('Invalid JSON', { status: 400 })
+    }
     const { listId, musicIds } = body
-    if (!listId || !musicIds?.length) return new Response(null, { status: 400 })
+    if (typeof listId !== 'string' || !listId ||
+        !Array.isArray(musicIds) || !musicIds.length ||
+        !musicIds.every(id => typeof id === 'string')) {
+      return new Response(null, { status: 400 })
+    }
     await this.userSpace.listManage.listDataManage.listMusicRemove(listId, musicIds)
-    void this.userSpace.listManage.createSnapshot()
+    await this.userSpace.listManage.createSnapshot()
+    // 管理操作后立即 flush，防止 DO hibernate 丢失 throttle 中的 snapshotInfo
+    await this.userSpace.listManage.flush()
     return new Response(null, { status: 204 })
   }
 
   private async handleDeleteDislikeMusic(request: Request): Promise<Response> {
     if (!this.userSpace) return new Response(null, { status: 404 })
-    const body = await request.json<{ rules: string }>()
-    await this.userSpace.dislikeManage.dislikeDataManage.overwriteDislikeInfo(body.rules ?? '')
-    void this.userSpace.dislikeManage.createSnapshot()
+    let body: { rules: string }
+    try {
+      body = await request.json<{ rules: string }>()
+    } catch {
+      return new Response('Invalid JSON', { status: 400 })
+    }
+    if (typeof body.rules !== 'string') return new Response(null, { status: 400 })
+    await this.userSpace.dislikeManage.dislikeDataManage.overwriteDislikeInfo(body.rules)
+    await this.userSpace.dislikeManage.createSnapshot()
+    await this.userSpace.dislikeManage.flush()
     return new Response(null, { status: 204 })
   }
 
@@ -177,14 +204,36 @@ export class UserSyncDO implements DurableObject {
 
   private async handleImportData(request: Request): Promise<Response> {
     if (!this.userSpace) return new Response(null, { status: 404 })
-    const body = await request.json<{ listData?: LX.Sync.List.ListData; dislikeRules?: string }>()
-    if (body.listData) {
-      await this.userSpace.listManage.listDataManage.listDataOverwrite(body.listData)
-      void this.userSpace.listManage.createSnapshot()
+    let body: { listData?: LX.Sync.List.ListData; dislikeRules?: string }
+    try {
+      body = await request.json<{ listData?: LX.Sync.List.ListData; dislikeRules?: string }>()
+    } catch {
+      return new Response('Invalid JSON', { status: 400 })
     }
-    if (body.dislikeRules !== undefined) {
-      await this.userSpace.dislikeManage.dislikeDataManage.overwriteDislikeInfo(body.dislikeRules)
-      void this.userSpace.dislikeManage.createSnapshot()
+    if (body.listData) {
+      const ld = body.listData
+      if (typeof ld !== 'object' || ld === null ||
+          !Array.isArray(ld.defaultList) || !Array.isArray(ld.loveList) || !Array.isArray(ld.userList)) {
+        return new Response('Invalid listData structure', { status: 400 })
+      }
+      try {
+        await this.userSpace.listManage.listDataManage.listDataOverwrite(ld)
+        await this.userSpace.listManage.createSnapshot()
+        await this.userSpace.listManage.flush()
+      } catch (err) {
+        console.error('import listData failed:', err)
+        return new Response('Import listData failed', { status: 500 })
+      }
+    }
+    if (typeof body.dislikeRules === 'string') {
+      try {
+        await this.userSpace.dislikeManage.dislikeDataManage.overwriteDislikeInfo(body.dislikeRules)
+        await this.userSpace.dislikeManage.createSnapshot()
+        await this.userSpace.dislikeManage.flush()
+      } catch (err) {
+        console.error('import dislikeRules failed:', err)
+        return new Response('Import dislikeRules failed', { status: 500 })
+      }
     }
     return new Response(null, { status: 204 })
   }
@@ -222,11 +271,18 @@ export class UserSyncDO implements DurableObject {
       const deviceName = data[2] || 'Unknown'
       const isMobile = data[3] === 'lx_music_mobile'
 
-      // 首次认证时建立 userName（先设置再 await，防止并发双重初始化）
+      // 首次认证时建立 userName（用 initPromise 串行化，防止并发双重初始化）
       if (!this.userName) {
-        const name = userInfo.name
-        this.userName = name
-        await this.loadAndInit(name)
+        if (!this.initPromise) {
+          const name = userInfo.name
+          this.initPromise = this.loadAndInit(name).then(() => {
+            this.userName = name
+          }).catch(err => {
+            this.initPromise = null  // 失败则允许重试
+            throw err
+          })
+        }
+        await this.initPromise
       }
 
       // 同名设备复用已有 clientId/key，避免重复记录
@@ -259,15 +315,20 @@ export class UserSyncDO implements DurableObject {
 
     const ip = request.headers.get('cf-connecting-ip') ?? 'unknown'
     const now = Date.now()
+    // lazy sweep of expired entries to bound memory growth
+    if (this.ipFailures.size >= IP_FAILURE_SWEEP_THRESHOLD) {
+      for (const [k, v] of this.ipFailures) if (v.resetAt < now) this.ipFailures.delete(k)
+    }
     const failureEntry = this.ipFailures.get(ip)
     if (failureEntry && now < failureEntry.resetAt && failureEntry.count >= IP_FAILURE_LIMIT) {
       return new Response(SYNC_CODE.msgBlockedIp, { status: 403 })
     }
 
     const recordIpFailure = () => {
+      const t = Date.now()
       const entry = this.ipFailures.get(ip)
-      if (!entry || now >= entry.resetAt) {
-        this.ipFailures.set(ip, { count: 1, resetAt: now + IP_FAILURE_TTL_MS })
+      if (!entry || t >= entry.resetAt) {
+        this.ipFailures.set(ip, { count: 1, resetAt: t + IP_FAILURE_TTL_MS })
       } else {
         entry.count++
       }
@@ -294,11 +355,15 @@ export class UserSyncDO implements DurableObject {
       return new Response(SYNC_CODE.msgAuthFailed, { status: 401 })
     }
 
-    this.ipFailures.delete(ip)
-
     const users = this.getUsers()
     const user = users.find(u => u.name === this.userName)
-    if (!user) return new Response(SYNC_CODE.msgAuthFailed, { status: 401 })
+    if (!user) {
+      recordIpFailure()
+      return new Response(SYNC_CODE.msgAuthFailed, { status: 401 })
+    }
+
+    // 认证全部通过后再清除失败计数
+    this.ipFailures.delete(ip)
 
     keyInfo.lastConnectDate = Date.now()
     await this.userSpace.dataManage.saveClientKeyInfo(keyInfo)
